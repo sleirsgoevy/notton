@@ -9,9 +9,9 @@ First, generate a config. file:
 python3 genconfig.py > c.json
 
 Then you can run NotTON:
-python3 notton.py c.json <bind_addr>-<remote_addr>
+python3 notton.py c.json
 
-Note that address pairs must match exactly for that to work.
+Note that no sockets are connected by default. Use !socket to create a new one.
 
 # Features
 
@@ -45,3 +45,30 @@ Messages to <who> will be RELAYed through <over_who>.
 
 !norelay <who>
 Messages to <who> will be sent directly.
+
+!forward <who>|<msgid>
+Forward message <msgid> to <who>
+
+!sendpeer <to_who>|<who>
+Send contact <who> to <to_who>
+
+!sendfile <to_who>|<file>
+Send contact from <file> to <to_who>
+
+!import <msgid>
+Import contact from message <msgid>
+
+!importfile <file>
+Import contact from <file>
+
+!socket <proto>://<params>
+Create a new socket.
+* For UDP, it is udp://<bind_addr>:<bind_port>-<remote_addr>:<remote_port>.
+  Note that UDP socket must be created symmetrically on both sides to work.
+* For UDP broadcast, it is udpbroadcast://<bind_addr>:<bind_port>.
+  <bind_addr> should be empty. <bind_port> should be the same on both sides to work.
+
+!nickname <who>@<nickname>
+Set a nickname <nickname> for <who>.
+<who> can be later specified as @<nickname>.
+Nickname will be included in a contact, even if specified by ID.
