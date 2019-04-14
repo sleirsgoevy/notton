@@ -5,11 +5,14 @@ Currently, it only operates on UDP sockets.
 
 # How to launch
 
-First, generate a config. file:
-python3 genconfig.py > c.json
+First, create a profile directory:
+mkdir c
+
+Then create a config file:
+python3 genconfig.py > c/config.json
 
 Then you can run NotTON:
-python3 notton.py c.json <frontend_file>
+python3 notton.py c <frontend_file>
 
 Note that no sockets are connected by default. Use !socket to create a new one.
 
@@ -72,3 +75,8 @@ Create a new socket.
 Set a nickname <nickname> for <who>.
 <who> can be later specified as @<nickname>.
 Nickname will be included in a contact, even if specified by ID.
+
+# Web frontend
+
+Usage: python3 notton.py <profile_dir> web_frontend/web_frontend.py <port>
+Binds to 127.0.0.1:<port>, usage should be intuitive. Not fully functional yet.
