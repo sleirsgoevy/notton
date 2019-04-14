@@ -9,7 +9,7 @@ First, generate a config. file:
 python3 genconfig.py > c.json
 
 Then you can run NotTON:
-python3 notton.py c.json
+python3 notton.py c.json <frontend_file>
 
 Note that no sockets are connected by default. Use !socket to create a new one.
 
@@ -20,7 +20,7 @@ Note that no sockets are connected by default. Use !socket to create a new one.
 * full mesh routing (currently via total broadcast)
 * BitMessage-like anonymous messages (not fully anonymous yet)
 
-# CLI
+# CLI frontend (cli_frontend.py)
 
 To send a message to a peer, type:
 <peer_id>|<text>
