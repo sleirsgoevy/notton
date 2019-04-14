@@ -1,5 +1,6 @@
 import threading, queue, os, socket, sys, json, cryptutil, socketutil, router
 from collections import defaultdict
+from frontend_helper import frontend
 
 config = json.loads(open(sys.argv[1]).read())
 privkey = cryptutil.import_key(config['privkey'])
@@ -33,7 +34,7 @@ pkt_cache = set()
 self = cryptutil.hash(pubkey)
 if self not in config['peers']:
     config['peers'][self] = cryptutil.export_key(pubkey)
-print('I\'m', self)
+frontend.event('i_am', self)
 
 saved_msgs = {}
 saved_contacts = {}
@@ -44,7 +45,7 @@ def receiver_loop():
         try: handle_packet(msg, sender=snd)
         except:
             sys.excepthook(*sys.exc_info())
-            print('Note: caused by:', msg, file=sys.stderr)
+            frontend.warn('Note: caused by: %r'%msg)
 
 F_RELAYED = 1
 F_VERIFIED = 2
@@ -78,7 +79,7 @@ def handle_packet(msg, flags=0, verified_as=None, sender=None):
                 send_msg(snd, b'NEEDKEY\0')
                 return
         if not cryptutil.check_sign(dat0, cryptutil.import_key(config['peers'][snd])):
-            print('Warning: invalid EMSG signature', file=sys.stderr)
+            frontend.warn('Warning: invalid EMSG signature')
             return
         else:
             pkt_cache.remove(idx)
@@ -98,9 +99,9 @@ def handle_packet(msg, flags=0, verified_as=None, sender=None):
         snd, dat = dat0[:-128].split(b'\0', 1)
         snd = snd.decode('ascii', 'replace')
         if snd not in config['peers']:
-            print('Warning: could not validate SIGNED message, no public key available', file=sys.stderr)
+            frontend.warn('Warning: could not validate SIGNED message, no public key available')
         elif not cryptutil.check_sign(dat0, cryptutil.import_key(config['peers'][snd])):
-            print('Warning: dropping incorrectly SIGNED message', file=sys.stderr)
+            frontend.warn('Warning: dropping incorrectly SIGNED message')
             return
         pkt_cache.remove(idx)
         return handle_packet(idx+b'\0'+dat, flags | F_VERIFIED, snd, sender)
@@ -122,11 +123,11 @@ def handle_packet(msg, flags=0, verified_as=None, sender=None):
             try: del sender_pool[idx2]
             except KeyError: pass
             else: rs[snd].recalc(sender)
-            print('> [%s] delivered'%idx2.decode('ascii', 'replace'))
+            frontend.event('delivered', idx2.decode('ascii', 'replace'))
         else:
             send_pkt(msg, rec)
     else:
-        print('Warning: dropping unrecognized packet:', msg, file=sys.stderr)
+        frontend.warn('Warning: dropping unrecognized packet: %r'%msg)
 
 msg_cache = set()
 
@@ -134,21 +135,22 @@ def handle_incoming(pktid, idx, dat, flags, verified_as, rec):
     if not (flags & F_FORWARDED):
         if idx in msg_cache: return
         msg_cache.add(idx)
+    frontend.event('msg_pkt_id', idx.decode('ascii', 'replace'), pktid.decode('ascii', 'replace'))
 #   print(dat)
     snd0, tp, dat = dat.split(b'\0', 2)
     snd = snd0.decode('ascii', 'replace')
     if not (flags & F_VERIFIED) and snd in config['peers']:
-        print('Warning: message %s not verified, may be spoofed'%idx.decode('ascii', 'replace'), file=sys.stderr)
+        frontend.warn('Warning: message %s not verified, may be spoofed'%idx.decode('ascii', 'replace'))
     elif (flags & F_VERIFIED) and snd != verified_as:
-        print('Warning: message %s: sender spoofed, dropping', file=sys.stderr)
+        frontend.warn('Warning: message %s: sender spoofed, dropping'%idx.decode('ascii', 'replace'))
         return
     if rec != self.encode('ascii'):
-        print('> [%s] (originally written to %s)'%(idx.decode('ascii', 'replace'), format_nickname(rec.decode('ascii', 'replace'))))
+        frontend.event('originally_written', idx.decode('ascii', 'replace'), format_nickname(rec.decode('ascii', 'replace')))
     if tp == b'NEEDKEY':
         send_key_to(snd)
         return
     if tp == b'MSG':
-        print('> [%s] %s wrote: %s'%(idx.decode('ascii', 'replace'), format_nickname(snd), dat))
+        frontend.event('incoming_msg', idx.decode('ascii', 'replace'), format_nickname(snd), dat)
     elif tp == b'KEY':
         key = cryptutil.import_binary_key(dat)
         config['peers'][cryptutil.hash(key)] = cryptutil.export_key(key)
@@ -158,17 +160,17 @@ def handle_incoming(pktid, idx, dat, flags, verified_as, rec):
             tgt = tgt.decode('ascii', 'replace')
             send_msg(tgt, b'RELAYED\0'+msg)
         else:
-            print('Warning: RELAY message from an untrusted source', file=sys.stderr)
+            frontend.warn('Warning: RELAY message from an untrusted source')
     elif tp == b'RELAYED':
         handle_packet(idx+b'\0'+dat, True)
     elif tp == b'FORWARD':
-        print('> [%s] forwarded by %s'%(idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace'))))
+        frontend.event('was_forwarded', idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace')))
         handle_packet(idx+b'\0'+dat, F_FORWARDED)
     elif tp == b'CONTACT':
         saved_contacts[idx.decode('ascii', 'replace')] = dat
-        print('> [%s] %s sent a contact'%(idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace'))))
+        frontend.event('incoming_contact', idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace')))
     else:
-        print('Warning: dropping unknown message type:', tp, file=sys.stderr)
+        frontend.warn('Warning: dropping unknown message type: %r'%tp)
 
 def handle_send_ack(idx, dat):
     snd0, dat = dat.split(b'\0', 1)
@@ -197,6 +199,7 @@ def mb_encrypt(rec, msg):
     return msg
 
 def send_msg(rec, dat):
+    print(rec, dat)
     idx = os.urandom(8).hex().encode('ascii')
     msg = mb_encrypt(rec, b'MSG\0'+idx+b'\0'+rec.encode('ascii')+b'\0'+self.encode('ascii')+b'\0'+dat)
     return send_raw_msg(rec, idx, msg)
@@ -248,79 +251,74 @@ def import_contact(c, interactive=True):
         print('Error during contact import:', file=sys.stderr)
         sys.excepthook(*sys.exc_info())
 
-def input_loop():
-    while True:
-        cmd = input()
-        if cmd.startswith('!'):
-            cmd, args = cmd.split(' ', 1)
-            if cmd == '!sendkey':
-                idx = send_key_to(parse_nickname(args))
-                print('< [%s] sent key to %s'%(idx.decode('ascii', 'replace'), args))
-            elif cmd == '!reqkey':
-                idx = send_msg(parse_nickname(args), b'NEEDKEY\0')
-                print('< [%s] sent key request to %s'%(idx.decode('ascii', 'replace'), args))
-            elif cmd == '!trust':
-                config['trusted'].append(parse_nickname(args))
-                update_config()
-                print('* now trusting', args)
-            elif cmd == '!untrust':
-                while True:
-                    try: config['trusted'].remove(parse_nickname(args))
-                    except ValueError: break
-                update_config()
-                print('* not trusting', args, 'anymore')
-            elif cmd == '!relay':
-                who, overwho = args.split('|', 1)
-                config['relays'][parse_nickname(who)] = parse_nickname(overwho)
-                update_config()
-                print('* relaying %s over %s'%(who, overwho))
-            elif cmd == '!norelay':
-                try: del config['relays'][parse_nickname(args)]
-                except KeyError: pass
-                print('* not relaying %s anymore'%args)
-            elif cmd == '!forward':
-                rec, msg = args.split('|', 1)
-                msg = msg.encode('ascii')
-                if msg in saved_msgs:
-                    idx = send_msg(parse_nickname(rec), b'FORWARD\0'+saved_msgs[msg])
-                    print('< [%s] forwarded to %s: %s'%(idx.decode('ascii', 'replace'), rec, msg))
-                else:
-                    print('* no such msg: %s'%msg)
-            elif cmd == '!sendpeer':
-                rec, who = args.split('|', 1)
-                who = parse_nickname(who)
-                if who not in config['peers']:
-                    print('* no known public key for', who)
-                nickname = config['nicknames'].get(who, None)
-                send_msg(parse_nickname(rec), b'CONTACT\0'+json.dumps({"peers": {config['peers'][who]: nickname}, "sockets": [], "relays": {}, "trusted": []}).encode('utf-8'))
-            elif cmd == '!sendfile':
-                rec, f = args.split('|', 1)
-                try: data = open(f, 'rb').read()
-                except IOError: print('* cannot open file')
-                else: send_msg(parse_nickname(rec), b'CONTACT\0'+data)
-            elif cmd == '!import':
-                if args in saved_contacts:
-                    import_contact(saved_contacts[args])
-                else:
-                    print('* no such contact')
-            elif cmd == '!importfile':
-                try: data = open(args, 'rb').read()
-                except IOError: print('* cannot open file')
-                else: import_contact(data)
-            elif cmd == '!socket':
-                start_peer_socket(args)
-                config['sockets'].append(args)
-                update_config()
-                print('* socket opened')
-            elif cmd == '!nickname':
-                who, nick = args.split('@', 1)
-                config['nicknames'][who] = nick
-                update_config()
-                print('* %s is now @%s'%(who, nick))
+def command(*cmd):
+    cmd, *args = cmd
+    if cmd == 'sendkey':
+        idx = send_key_to(parse_nickname(args[0]))
+        frontend.event('sent_key', idx.decode('ascii', 'replace'), args)
+    elif cmd == 'reqkey':
+        idx = send_msg(parse_nickname(args[0]), b'NEEDKEY\0')
+        frontend.event('sent_key_req', idx.decode('ascii', 'replace'), args[0])
+    elif cmd == 'trust':
+        config['trusted'].append(parse_nickname(args[0]))
+        update_config()
+    elif cmd == 'untrust':
+        while True:
+            try: config['trusted'].remove(parse_nickname(args[0]))
+            except ValueError: break
+        update_config()
+    elif cmd == 'relay':
+        who, overwho = args
+        config['relays'][parse_nickname(who)] = parse_nickname(overwho)
+        update_config()
+    elif cmd == 'norelay':
+        try: del config['relays'][parse_nickname(args[0])]
+        except KeyError: pass
+    elif cmd == 'forward':
+        rec, msg = args
+        msg = msg.encode('ascii')
+        print(repr(rec))
+        if msg in saved_msgs:
+            idx = send_msg(parse_nickname(rec), b'FORWARD\0'+saved_msgs[msg])
+            frontend.event('forwarded', idx.decode('ascii', 'replace'), rec, msg.decode('ascii'))
         else:
-            rec, msg = cmd.split('|', 1)
-            idx = send_msg(parse_nickname(rec), b'MSG\0'+msg.encode('utf-8'))
-            print('< [%s] sent to %s: %r'%(idx.decode('ascii', 'replace'), rec, msg))
+            frontend.event('no_such_msg', msg)
+    elif cmd == 'sendpeer':
+        rec, who = args
+        who = parse_nickname(who)
+        if who not in config['peers']:
+            frontend.event('no_public_key', who)
+        nickname = config['nicknames'].get(who, None)
+        idx = send_msg(parse_nickname(rec), b'CONTACT\0'+json.dumps({"peers": {config['peers'][who]: nickname}, "sockets": [], "relays": {}, "trusted": []}).encode('utf-8'))
+        frontend.event('sent_contact', idx.decode('ascii', 'replace'), rec, who)
+    elif cmd == 'sendfile':
+        rec, f = args
+        try: data = open(f, 'rb').read()
+        except IOError: frontend.warn('* cannot open file')
+        else:
+            idx = send_msg(parse_nickname(rec), b'CONTACT\0'+data)
+            frontend.event('sent_contact_file', idx.decode('ascii', 'replace'), rec, f)
+    elif cmd == 'import':
+        if args[0] in saved_contacts:
+            import_contact(saved_contacts[args[0]])
+        else:
+            frontend.event('no_contact', args[0])
+    elif cmd == 'importfile':
+        try: data = open(args, 'rb').read()
+        except IOError: frontend.warn('* cannot open file')
+        else: import_contact(data)
+    elif cmd == 'socket':
+        start_peer_socket(args)
+        config['sockets'].append(args)
+        update_config()
+    elif cmd == 'nickname':
+        who, nick = args
+        config['nicknames'][who] = nick
+        update_config()
+    elif cmd == 'sendmsg':
+        rec, msg = args
+        idx = send_msg(parse_nickname(rec), b'MSG\0'+msg)
+        frontend.event('sent', idx.decode('ascii', 'replace'), rec, msg)
 
 def start_peer_socket(addr):
     q = queue.Queue()
@@ -345,4 +343,5 @@ def format_nickname(s):
 setup_peers()
 threading.Thread(target=receiver_loop, daemon=True).start()
 threading.Thread(target=sender_loop, daemon=True).start()
-input_loop()
+frontend.command = command
+frontend.mainloop()
