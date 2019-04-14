@@ -1,10 +1,12 @@
-import threading, queue, os, socket, sys, json, cryptutil, socketutil
+import threading, queue, os, socket, sys, json, cryptutil, socketutil, router
+from collections import defaultdict
 
 config = json.loads(open(sys.argv[1]).read())
 privkey = cryptutil.import_key(config['privkey'])
 pubkey = privkey.publickey()
 msgq = queue.Queue()
 peers = []
+rs = defaultdict(lambda: router.RouteSet(peers))
 
 def update_config():
     with open(sys.argv[1], 'w') as file:
@@ -22,12 +24,12 @@ def peer_main(addr, q):
             x.sendall(msg)
     def receiver_thread():
         while True:
-            try: msgq.put(x.recv(1048576))
+            try: msgq.put((x.recv(1048576), q))
             except: pass
     threading.Thread(target=sender_thread, daemon=True).start()
     threading.Thread(target=receiver_thread, daemon=True).start()
 
-msg_cache = set()
+pkt_cache = set()
 self = cryptutil.hash(pubkey)
 if self not in config['peers']:
     config['peers'][self] = cryptutil.export_key(pubkey)
@@ -38,18 +40,22 @@ saved_contacts = {}
 
 def receiver_loop():
     while True:
-        msg = msgq.get()
-        try: handle_packet(msg)
+        msg, snd = msgq.get()
+        try: handle_packet(msg, sender=snd)
         except:
             sys.excepthook(*sys.exc_info())
             print('Note: caused by:', msg, file=sys.stderr)
-        
 
-def handle_packet(msg, is_relayed=False, is_verified=False, is_forwarded=False):
-    if is_forwarded: is_relayed = True
+F_RELAYED = 1
+F_VERIFIED = 2
+F_FORWARDED = 4
+F_ENCRYPTED = 8
+
+def handle_packet(msg, flags=0, verified_as=None, sender=None):
+    if flags & F_FORWARDED: flags |= F_RELAYED
     idx, tp, dat = msg.split(b'\0', 2)
-    if idx in msg_cache: return
-    msg_cache.add(idx)
+    if idx in pkt_cache: return
+    pkt_cache.add(idx)
 #   print('[relayed=%r][verified=%r][forwarded=%r] %r'%(is_relayed, is_verified, is_forwarded, msg))
     if tp == b'EMSG':
         dat0 = cryptutil.decrypt(dat, privkey, 'd')
@@ -75,18 +81,18 @@ def handle_packet(msg, is_relayed=False, is_verified=False, is_forwarded=False):
             print('Warning: invalid EMSG signature', file=sys.stderr)
             return
         else:
-            msg_cache.remove(idx)
-            msgid = handle_packet(idx+b'\0'+dat, is_relayed, snd, is_forwarded)
+            pkt_cache.remove(idx)
+            msgid = handle_packet(idx+b'\0'+dat, flags | F_VERIFIED | F_ENCRYPTED, snd, sender)
             saved_msgs[msgid] = b'SIGNED\0'+dat0
             return msgid
     if tp == b'eMSG':
         rec, dat0 = dat.split(b'\0', 1)
         if rec != self.encode('ascii'):
-            send_pkt(msg)
+            send_pkt(msg, rec.decode('ascii', 'replace'))
             return
         else:
-            msg_cache.remove(idx)
-            return handle_packet(idx+b'\0EMSG\0'+dat0, is_relayed, is_verified, is_forwarded)
+            pkt_cache.remove(idx)
+            return handle_packet(idx+b'\0EMSG\0'+dat0, flags, verified_as, sender)
     if tp == b'SIGNED':
         dat0 = dat
         snd, dat = dat0[:-128].split(b'\0', 1)
@@ -96,42 +102,48 @@ def handle_packet(msg, is_relayed=False, is_verified=False, is_forwarded=False):
         elif not cryptutil.check_sign(dat0, cryptutil.import_key(config['peers'][snd])):
             print('Warning: dropping incorrectly SIGNED message', file=sys.stderr)
             return
-        msg_cache.remove(idx)
-        return handle_packet(idx+b'\0'+dat, is_relayed, snd, is_forwarded)
-    if tp == b'MSG' and not is_relayed:
+        pkt_cache.remove(idx)
+        return handle_packet(idx+b'\0'+dat, flags | F_VERIFIED, snd, sender)
+    if tp == b'MSG' and not (flags & F_RELAYED):
         idx2, rec, dat0 = dat.split(b'\0', 2)
         if rec == self.encode('ascii'):
             handle_send_ack(idx2, dat0)
     if tp == b'MSG':
         idx2, rec, dat = dat.split(b'\0', 2)
-        if rec == self.encode('ascii') or is_forwarded:
-            handle_incoming(idx2, dat, is_relayed, is_verified, rec)
+        if rec == self.encode('ascii') or (flags & F_FORWARDED):
+            handle_incoming(idx, idx2, dat, flags, verified_as, rec)
             saved_msgs[idx2] = msg.split(b'\0', 1)[1]
             return idx2
         else:
-            send_pkt(msg)
+            send_pkt(msg, rec)
     elif tp == b'ACK':
-        rec, idx2 = dat.split(b'\0', 1)
+        snd, rec, idx2 = dat.split(b'\0', 2)
         if rec == self.encode('ascii'): 
             try: del sender_pool[idx2]
             except KeyError: pass
+            else: rs[snd].recalc(sender)
             print('> [%s] delivered'%idx2.decode('ascii', 'replace'))
         else:
-            send_pkt(msg)
+            send_pkt(msg, rec)
     else:
         print('Warning: dropping unrecognized packet:', msg, file=sys.stderr)
 
-def handle_incoming(idx, dat, is_relayed, is_verified, rec):
+msg_cache = set()
+
+def handle_incoming(pktid, idx, dat, flags, verified_as, rec):
+    if not (flags & F_FORWARDED):
+        if idx in msg_cache: return
+        msg_cache.add(idx)
 #   print(dat)
-    if rec != self.encode('ascii'):
-        print('> [%s] (originally written to %s)'%(idx.decode('ascii', 'replace'), format_nickname(rec.decode('ascii', 'replace'))))
-    if not is_verified:
-        print('Warning: message %s not verified, may be spoofed'%idx.decode('ascii', 'replace'), file=sys.stderr)
     snd0, tp, dat = dat.split(b'\0', 2)
     snd = snd0.decode('ascii', 'replace')
-    if is_verified and snd != is_verified:
+    if not (flags & F_VERIFIED) and snd in config['peers']:
+        print('Warning: message %s not verified, may be spoofed'%idx.decode('ascii', 'replace'), file=sys.stderr)
+    elif (flags & F_VERIFIED) and snd != verified_as:
         print('Warning: message %s: sender spoofed, dropping', file=sys.stderr)
         return
+    if rec != self.encode('ascii'):
+        print('> [%s] (originally written to %s)'%(idx.decode('ascii', 'replace'), format_nickname(rec.decode('ascii', 'replace'))))
     if tp == b'NEEDKEY':
         send_key_to(snd)
         return
@@ -141,7 +153,7 @@ def handle_incoming(idx, dat, is_relayed, is_verified, rec):
         key = cryptutil.import_binary_key(dat)
         config['peers'][cryptutil.hash(key)] = cryptutil.export_key(key)
     elif tp == b'RELAY':
-        if snd in config['trusted']:
+        if snd in config['trusted'] and not forwarded:
             tgt, msg = dat.split(b'\0', 1)
             tgt = tgt.decode('ascii', 'replace')
             send_msg(tgt, b'RELAYED\0'+msg)
@@ -151,7 +163,7 @@ def handle_incoming(idx, dat, is_relayed, is_verified, rec):
         handle_packet(idx+b'\0'+dat, True)
     elif tp == b'FORWARD':
         print('> [%s] forwarded by %s'%(idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace'))))
-        handle_packet(idx+b'\0'+dat, is_forwarded=True)
+        handle_packet(idx+b'\0'+dat, F_FORWARDED)
     elif tp == b'CONTACT':
         saved_contacts[idx.decode('ascii', 'replace')] = dat
         print('> [%s] %s sent a contact'%(idx.decode('ascii', 'replace'), format_nickname(snd0.decode('ascii', 'replace'))))
@@ -160,11 +172,13 @@ def handle_incoming(idx, dat, is_relayed, is_verified, rec):
 
 def handle_send_ack(idx, dat):
     snd0, dat = dat.split(b'\0', 1)
-    if snd0 != self.encode('ascii'):
-        send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+mb_encrypt(snd0, b'ACK\0'+snd0+b'\0'+idx))
+    send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+mb_encrypt(snd0.decode('ascii', 'replace'), b'ACK\0'+self.encode('ascii')+b'\0'+snd0+b'\0'+idx), snd0.decode('ascii', 'replace'))
 
-def send_pkt(pkt):
-    for i in peers: i.put(pkt)
+def send_pkt(pkt, rec=None):
+    if rec != None:
+        rs[rec].send(pkt)
+    else:
+        for i in peers: i.put(pkt)
 
 sender_pool = {}
 sender_queue = queue.Queue()
@@ -175,11 +189,11 @@ def sender_loop():
             if sender_pool: sender_queue.get(timeout=0.25)
             else: sender_queue.get()
         except queue.Empty: pass
-        for v in sender_pool.values(): send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+v)
+        for k, v in sender_pool.values(): send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+v, k)
 
 def mb_encrypt(rec, msg):
     if rec in config['peers']:
-        msg = b'EMSG\0'+cryptutil.encrypt(cryptutil.sign(self.encode('ascii')+b'\0'+msg, privkey), cryptutil.import_key(config['peers'][rec]), 'e')
+        msg = b'eMSG\0'+rec.encode('ascii')+b'\0'+cryptutil.encrypt(cryptutil.sign(self.encode('ascii')+b'\0'+msg, privkey), cryptutil.import_key(config['peers'][rec]), 'e')
     return msg
 
 def send_msg(rec, dat):
@@ -190,7 +204,7 @@ def send_msg(rec, dat):
 def send_raw_msg(rec, idx, msg):
     if rec in config['relays']:
         return send_msg(config['relays'][rec], b'RELAY\0'+rec.encode('ascii')+b'\0'+msg)
-    sender_pool[idx] = msg
+    sender_pool[idx] = (rec, msg)
     sender_queue.put(None)
     return idx
 
