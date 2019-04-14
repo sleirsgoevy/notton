@@ -1,0 +1,133 @@
+<html>
+<head>
+<title>NotTON web frontend</title>
+<style>
+.match_parent
+{
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+.toolbar
+{
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 40px;
+    border: 1px solid black;
+    background: white;
+}
+
+.toolbar_button
+{
+    width: 40px;
+}
+
+.toolbar_item, .toolbar_button
+{
+    height: 40px;
+    position: relative;
+}
+
+.to_left, .to_right
+{
+    display: inline;
+}
+
+.to_left
+{
+    float: left;
+}
+
+.to_right
+{
+    float: right;
+}
+
+.peer
+{
+    min-height: 100px;
+    cursor: pointer;
+}
+
+.selected > .peer
+{
+    background: #ccf;
+}
+
+.msgblk
+{
+    display: none;
+}
+
+.msgblk.selected
+{
+    display: inline;
+}
+
+.message
+{
+    margin: 5px;
+    padding: 5px;
+}
+
+.incoming, .outgoing, .delivered
+{
+    border-radius: 5px;
+}
+
+.incoming
+{
+    background: white;
+    border: 1px solid black;
+}
+
+.outgoing
+{
+    background: yellow;
+}
+
+.delivered
+{
+    background: #ccf;
+}
+</style>
+</head>
+<body>
+<table class="match_parent" style="position: fixed" cellpadding="0" cellspacing="0" border="1">
+<tr>
+<td width="20%" style="position: relative">
+<div class="match_parent" style="overflow-y: scroll">
+<table id="peers" style="margin: 0; width: 100%" cellspacing="0" border="1"></table>
+</div>
+</td>
+<td style="overflow: scroll; position: relative">
+<div id="msgScroll" class="match_parent" style="overflow-y: scroll; padding: 0">
+<div style="transform: scaleY(-1); margin: 0; padding: 0; min-height: 100%">
+<div id="messages" style="transform: scaleY(-1); margin: 0; padding: 45px 0 45px 0; float: bottom"></div>
+</div>
+</div>
+<div id="toolbar" class="toolbar" style="top: 0">
+<span class="to_left"><div class="toolbar_item" id="peer_id"></div></span>
+<span class="to_right"><table class="toolbar_item" id="new_msg" cellpadding="0" cellspacing="0"><td><td><a href="javascript: new_message()">New message</a></td></tr></table></span>
+<div style="clear: both"></div>
+</div>
+<div id="bottombar" class="toolbar" style="bottom: 0">
+<form style="display: inline" action="/nonexistent" onsubmit="send_message(); return false">
+<table class="match_parent" cellspacing="0">
+<tr>
+<td class="toolbar_item" style="position: relative"><input id="message" name="message" class="match_parent" placeholder="Type your message..." /></td>
+<td class="toolbar_button"><a href="javascript: send_message()">Send!</a></td>
+</tr>
+</table>
+</form>
+</td>
+</tr>
+</table>
+<script src="/script.js"></script>
+</body>
+</html>

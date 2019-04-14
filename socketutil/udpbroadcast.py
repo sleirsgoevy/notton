@@ -21,3 +21,5 @@ class TheSocket:
             self._send_to(self.iface, msg)
     def recv(self, x):
         return self.sock.recv(x)
+    def close(self):
+        self.sock.close()

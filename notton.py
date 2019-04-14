@@ -1,8 +1,8 @@
-import threading, queue, os, socket, sys, json, cryptutil, socketutil, router
+import threading, queue, os, socket, sys, json, cryptutil, socketutil, router, dbhelper
 from collections import defaultdict
 from frontend_helper import frontend
 
-config = json.loads(open(sys.argv[1]).read())
+config = json.loads(open(sys.argv[1]+'/config.json').read())
 privkey = cryptutil.import_key(config['privkey'])
 pubkey = privkey.publickey()
 msgq = queue.Queue()
@@ -10,7 +10,7 @@ peers = []
 rs = defaultdict(lambda: router.RouteSet(peers))
 
 def update_config():
-    with open(sys.argv[1], 'w') as file:
+    with open(sys.argv[1]+'/config.json', 'w') as file:
         print(json.dumps(config), file=file)
 
 def peer_main(addr, q):
@@ -18,14 +18,18 @@ def peer_main(addr, q):
 #   x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 #   x.bind(a1)
 #   x.connect(a2)
-    x = socketutil.create_socket(addr)
+    x = [socketutil.create_socket(addr)]
     def sender_thread():
         while True:
             msg = q.get()
-            x.sendall(msg)
+            try: x[0].sendall(msg)
+            except:
+                try: x[0].close()
+                except: pass
+                x[0] = socketutil.create_socket(addr)
     def receiver_thread():
         while True:
-            try: msgq.put((x.recv(1048576), q))
+            try: msgq.put((x[0].recv(1048576), q))
             except: pass
     threading.Thread(target=sender_thread, daemon=True).start()
     threading.Thread(target=receiver_thread, daemon=True).start()
@@ -34,10 +38,11 @@ pkt_cache = set()
 self = cryptutil.hash(pubkey)
 if self not in config['peers']:
     config['peers'][self] = cryptutil.export_key(pubkey)
+    update_config()
 frontend.event('i_am', self)
 
-saved_msgs = {}
-saved_contacts = {}
+saved_msgs = dbhelper.DBDict('msgs', binary=True)
+saved_contacts = dbhelper.DBDict('contacts', binary=True)
 
 def receiver_loop():
     while True:
@@ -84,7 +89,8 @@ def handle_packet(msg, flags=0, verified_as=None, sender=None):
         else:
             pkt_cache.remove(idx)
             msgid = handle_packet(idx+b'\0'+dat, flags | F_VERIFIED | F_ENCRYPTED, snd, sender)
-            saved_msgs[msgid] = b'SIGNED\0'+dat0
+            if msgid != None:
+                saved_msgs[msgid.decode('ascii', 'replace')] = b'SIGNED\0'+dat0
             return msgid
     if tp == b'eMSG':
         rec, dat0 = dat.split(b'\0', 1)
@@ -113,14 +119,14 @@ def handle_packet(msg, flags=0, verified_as=None, sender=None):
         idx2, rec, dat = dat.split(b'\0', 2)
         if rec == self.encode('ascii') or (flags & F_FORWARDED):
             handle_incoming(idx, idx2, dat, flags, verified_as, rec)
-            saved_msgs[idx2] = msg.split(b'\0', 1)[1]
+            saved_msgs[idx2.decode('ascii', 'replace')] = msg.split(b'\0', 1)[1]
             return idx2
         else:
             send_pkt(msg, rec)
     elif tp == b'ACK':
         snd, rec, idx2 = dat.split(b'\0', 2)
         if rec == self.encode('ascii'): 
-            try: del sender_pool[idx2]
+            try: del sender_pool[idx2.decode('ascii', 'replace')]
             except KeyError: pass
             else: rs[snd].recalc(sender)
             frontend.event('delivered', idx2.decode('ascii', 'replace'))
@@ -182,7 +188,7 @@ def send_pkt(pkt, rec=None):
     else:
         for i in peers: i.put(pkt)
 
-sender_pool = {}
+sender_pool = dbhelper.DBDict('sender_pool')
 sender_queue = queue.Queue()
 
 def sender_loop():
@@ -199,7 +205,7 @@ def mb_encrypt(rec, msg):
     return msg
 
 def send_msg(rec, dat):
-    print(rec, dat)
+#   print(rec, dat)
     idx = os.urandom(8).hex().encode('ascii')
     msg = mb_encrypt(rec, b'MSG\0'+idx+b'\0'+rec.encode('ascii')+b'\0'+self.encode('ascii')+b'\0'+dat)
     return send_raw_msg(rec, idx, msg)
@@ -207,7 +213,7 @@ def send_msg(rec, dat):
 def send_raw_msg(rec, idx, msg):
     if rec in config['relays']:
         return send_msg(config['relays'][rec], b'RELAY\0'+rec.encode('ascii')+b'\0'+msg)
-    sender_pool[idx] = (rec, msg)
+    sender_pool[idx.decode('ascii', 'replace')] = (rec, msg)
     sender_queue.put(None)
     return idx
 
@@ -276,11 +282,11 @@ def command(*cmd):
         except KeyError: pass
     elif cmd == 'forward':
         rec, msg = args
-        msg = msg.encode('ascii')
-        print(repr(rec))
+        msg = msg
+#       print(repr(rec))
         if msg in saved_msgs:
             idx = send_msg(parse_nickname(rec), b'FORWARD\0'+saved_msgs[msg])
-            frontend.event('forwarded', idx.decode('ascii', 'replace'), rec, msg.decode('ascii'))
+            frontend.event('forwarded', idx.decode('ascii', 'replace'), rec, msg)
         else:
             frontend.event('no_such_msg', msg)
     elif cmd == 'sendpeer':
@@ -288,9 +294,10 @@ def command(*cmd):
         who = parse_nickname(who)
         if who not in config['peers']:
             frontend.event('no_public_key', who)
-        nickname = config['nicknames'].get(who, None)
-        idx = send_msg(parse_nickname(rec), b'CONTACT\0'+json.dumps({"peers": {config['peers'][who]: nickname}, "sockets": [], "relays": {}, "trusted": []}).encode('utf-8'))
-        frontend.event('sent_contact', idx.decode('ascii', 'replace'), rec, who)
+        else:
+            nickname = config['nicknames'].get(who, None)
+            idx = send_msg(parse_nickname(rec), b'CONTACT\0'+json.dumps({"peers": {config['peers'][who]: nickname}, "sockets": [], "relays": {}, "trusted": []}).encode('utf-8'))
+            frontend.event('sent_contact', idx.decode('ascii', 'replace'), rec, who)
     elif cmd == 'sendfile':
         rec, f = args
         try: data = open(f, 'rb').read()
@@ -344,4 +351,5 @@ setup_peers()
 threading.Thread(target=receiver_loop, daemon=True).start()
 threading.Thread(target=sender_loop, daemon=True).start()
 frontend.command = command
+frontend.config = config
 frontend.mainloop()
