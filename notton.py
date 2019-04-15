@@ -180,7 +180,7 @@ def handle_incoming(pktid, idx, dat, flags, verified_as, rec):
 
 def handle_send_ack(idx, dat):
     snd0, dat = dat.split(b'\0', 1)
-    send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+mb_encrypt(snd0.decode('ascii', 'replace'), b'ACK\0'+self.encode('ascii')+b'\0'+snd0+b'\0'+idx), snd0.decode('ascii', 'replace'))
+    send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+mb_encrypt(snd0.decode('ascii', 'replace'), None, b'ACK\0'+self.encode('ascii')+b'\0'+snd0+b'\0'+idx), snd0.decode('ascii', 'replace'))
 
 def send_pkt(pkt, rec=None):
     if rec != None:
@@ -199,15 +199,20 @@ def sender_loop():
         except queue.Empty: pass
         for k, v in sender_pool.values(): send_pkt(os.urandom(8).hex().encode('ascii')+b'\0'+v, k)
 
-def mb_encrypt(rec, msg):
+def mb_encrypt(rec, idx, msg):
+    if idx != None:
+        saved_msgs[idx.decode('ascii', 'replace')] = msg
     if rec in config['peers']:
-        msg = b'eMSG\0'+rec.encode('ascii')+b'\0'+cryptutil.encrypt(cryptutil.sign(self.encode('ascii')+b'\0'+msg, privkey), cryptutil.import_key(config['peers'][rec]), 'e')
+        signed = cryptutil.sign(self.encode('ascii')+b'\0'+msg, privkey)
+        if idx != None:
+            saved_msgs[idx.decode('ascii', 'replace')] = b'SIGNED\0'+signed
+        msg = b'eMSG\0'+rec.encode('ascii')+b'\0'+cryptutil.encrypt(signed, cryptutil.import_key(config['peers'][rec]), 'e')
     return msg
 
 def send_msg(rec, dat):
 #   print(rec, dat)
     idx = os.urandom(8).hex().encode('ascii')
-    msg = mb_encrypt(rec, b'MSG\0'+idx+b'\0'+rec.encode('ascii')+b'\0'+self.encode('ascii')+b'\0'+dat)
+    msg = mb_encrypt(rec, idx, b'MSG\0'+idx+b'\0'+rec.encode('ascii')+b'\0'+self.encode('ascii')+b'\0'+dat)
     return send_raw_msg(rec, idx, msg)
 
 def send_raw_msg(rec, idx, msg):

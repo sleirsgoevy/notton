@@ -1,4 +1,6 @@
 var timer = 0;
+var oldText = null;
+var fwdMsg = null;
 
 function Message(msgid)
 {
@@ -13,13 +15,16 @@ function Message(msgid)
     this.delivered = false;
 }
 
-Message.prototype.render = function()
+Message.prototype.render = function(forwarded)
 {
     var div = document.createElement('div');
     div.className = 'message';
     div.setAttribute('id', 'msg_'+this.msgid);
-    if(this.chat)
+    if(this.chat && !forwarded)
+    {
         div.className += (this.chat.key == this.author?' incoming':(this.delivered?' delivered':' outgoing'));
+        div.oncontextmenu = showForwardMenu.bind(this);
+    }
     var fwdP = document.createElement('p');
     fwdP.style.color = 'blue';
     if(peers[this.author] && peers[this.author].nickname)
@@ -32,7 +37,7 @@ Message.prototype.render = function()
         fwdP.appendChild(document.createTextNode(this.author));
     div.appendChild(fwdP);
     if(this.child)
-        div.appendChild(this.child.render());
+        div.appendChild(this.child.render(true));
     else
         div.appendChild(this.renderPreview());
     return div;
@@ -88,7 +93,16 @@ Peer.prototype.renderSelf = function()
     td.setAttribute('valign', 'top');
     tr.appendChild(td);
     td.className = 'peer';
-    td.onclick = this.select.bind(this);
+    td.onclick = function()
+    {
+        if(fwdMsg)
+        {
+            debugger;
+            xhr('/', JSON.stringify(['forward', this.key, fwdMsg.msgid]), function(){});
+            send_message();
+        }
+        this.select();
+    }.bind(this);
     var nickP = document.createElement('p');
     nickP.setAttribute('align', 'left');
     td.appendChild(nickP);
@@ -145,6 +159,7 @@ Peer.prototype.select = function()
         selected[i].className = selected[i].className.replace(' selected', '');
     document.getElementById('peer_'+this.key).className += ' selected';
     document.getElementById('msgblk_'+this.key).className += ' selected';
+    scrollDown(0);
 }
 
 var messages = {};
@@ -207,8 +222,9 @@ function handleEvent(e)
     {
         if(!messages[e[1]])
             messages[e[1]] = new Message(e[1]);
-        messages[e[1]].author = e[2];
+        messages[e[1]].author = stripNickname(e[2]);
         messages[e[1]].has_contact = true;
+        freeze(messages[e[1]]);
     }
     else if(e[0] == 'i_am')
         self_key = e[1];
@@ -218,6 +234,14 @@ function handleEvent(e)
             messages[e[1]] = new Message(e[1]);
         messages[e[1]].author = self_key;
         messages[e[1]].text = decodeURIComponent(escape(e[3]));
+        pushMessage(e[2], messages[e[1]]);
+    }
+    else if(e[0] == 'forwarded')
+    {
+        if(!messages[e[1]])
+            messages[e[1]] = new Message(e[1]);
+        messages[e[1]].author = self_key;
+        messages[e[1]].child = messages[e[3]];
         pushMessage(e[2], messages[e[1]]);
     }
     else if(e[0] == 'delivered')
@@ -297,15 +321,45 @@ xhr('/config', '', function(j)
     });
 });
 
-function send_message()
+function scrollDown(delay)
 {
-    var msg = document.getElementById('message');
-    var peer = getSelectedPeer().key;
-    xhr('/', JSON.stringify(["sendmsg", peer, unescape(encodeURIComponent(msg.value))]), function(){});
-    msg.value = '';
     var scroll = document.getElementById('msgScroll');
     setTimeout(function()
     {
         scroll.scrollTop = scroll.scrollHeight;
-    }, 100);
+    }, delay);
+}
+
+function showForwardMenu()
+{
+    if(fwdMsg)
+        return;
+    var msg = document.getElementById('message');
+    oldText = msg.value;
+    fwdMsg = this;
+    msg.value = '';
+    msg.placeholder = 'Select a peer to forward to...';
+    msg.disabled = true;
+    document.getElementById('send_btn').childNodes[0].data = 'Cancel';
+    return false;
+}
+
+function send_message()
+{
+    var msg = document.getElementById('message');
+    if(fwdMsg)
+    {
+        fwdMsg = null;
+        msg.value = oldText;
+        msg.placeholder = 'Type your message...';
+        msg.disabled = false;
+        document.getElementById('send_btn').childNodes[0].data = 'Send!';
+        return;
+    }
+    if(!msg.value)
+        return;
+    var peer = getSelectedPeer().key;
+    xhr('/', JSON.stringify(["sendmsg", peer, unescape(encodeURIComponent(msg.value))]), function(){});
+    msg.value = '';
+    scrollDown(100);
 }
