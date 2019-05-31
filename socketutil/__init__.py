@@ -1,4 +1,4 @@
-import socket
+import socket, hashlib
 
 def create_socket(addr):
     proto, params = addr.split('://', 1)
@@ -8,3 +8,4 @@ def create_socket(addr):
     except ImportError:
         raise socket.error("Unknown protocol")
     return mod.TheSocket(params)
+

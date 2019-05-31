@@ -97,7 +97,6 @@ Peer.prototype.renderSelf = function()
     {
         if(fwdMsg)
         {
-            debugger;
             xhr('/', JSON.stringify(['forward', this.key, fwdMsg.msgid]), function(){});
             send_message();
         }
@@ -190,7 +189,10 @@ function pushMessage(author, msg)
     {
         peers[author].redrawMSGP();
         peers[author].liftUp();
-        document.getElementById('msgblk_'+peers[author].key).appendChild(msg.render());
+        var msgblk = document.getElementById('msgblk_'+peers[author].key);
+        msgblk.appendChild(msg.render());
+        if(msgblk.className.indexOf(' selected') >= 0)
+            scrollDown(100);
     }
 }
 
@@ -324,9 +326,10 @@ xhr('/config', '', function(j)
 function scrollDown(delay)
 {
     var scroll = document.getElementById('msgScroll');
+    var msgs = document.getElementById('messages');
     setTimeout(function()
     {
-        scroll.scrollTop = scroll.scrollHeight;
+        scroll.scrollTop = msgs.offsetHeight + 90;
     }, delay);
 }
 

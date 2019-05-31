@@ -45,7 +45,7 @@ def mainloop():
         if cmd.startswith('!'):
             cmd, args = cmd.split(' ', 1)
             cmd = cmd[1:]
-            if cmd in ('sendkey', 'reqkey', 'import', 'importfile', 'socket'):
+            if cmd in ('sendkey', 'reqkey', 'import', 'importfile', 'unimport', 'unimportfile', 'socket'):
                 command(cmd, args)
             elif cmd in ('trust', 'untrust', 'norelay'):
                 command(cmd, args)

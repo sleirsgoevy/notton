@@ -80,3 +80,13 @@ Nickname will be included in a contact, even if specified by ID.
 
 Usage: python3 notton.py <profile_dir> web_frontend/web_frontend.py <port>
 Binds to 127.0.0.1:<port>, usage should be intuitive. Not fully functional yet.
+
+# Bots
+
+Bots are implemented as normal peers operating on custom sockets (python://). This means they're running on the local machine.
+The script bot_contact.py creates an importable contact from a bot source file.
+Usage: python3 bot_contact.py <source> <bot_nickname> [--devel]
+The contact (JSON data) is printed to standard output.
+If --devel is specified, the generated bot will use the original source file. If not, the source code will get embedded into the contact.
+For this to work, the bot source must begin with line 'BOT_KEY = "key"', where "key" is the bot's private key as exported by cryptutil.export_key()
+See examples in bots/ directory for more information.
